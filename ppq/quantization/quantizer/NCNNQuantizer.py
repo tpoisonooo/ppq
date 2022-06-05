@@ -41,10 +41,10 @@ class NCNNQuantizer(BaseQuantizer):
             policy=self.quantize_policy, rounding=self.rounding_policy,
             operation_meta=operation.meta_data, num_of_bits=self._num_of_bits,
             quant_max=self._quant_max, quant_min=self._quant_min,
-            observer_algorithm='percentile'
+            observer_algorithm='Minmax'
         )
 
-        if operation.type in {'Conv', 'Gemm'}:
+        if operation.type in {'Conv', 'Gemm', 'Add', 'LayerNorm', 'MultiHeadAttention', 'Gelu'}:
             assert operation.num_of_input > 0, 'Seems you got a Computing layer with no parameters.'
 
             if operation.type == 'Conv':
@@ -86,12 +86,65 @@ class NCNNQuantizer(BaseQuantizer):
                         offsets = None, scales  = None, channel_axis = 0
                     )
                 base_quant_config.input_quantization_config[1].observer_algorithm = 'Minmax'
+        
+            elif operation.type == 'Concat':
+                import pdb
+                pdb.set_trace()
+                base_quant_config.input_quantization_config[0].policy = QuantizationPolicy(
+                    QuantizationProperty.SYMMETRICAL +
+                    QuantizationProperty.LINEAR +
+                    QuantizationProperty.PER_TENSOR
+                )
+                base_quant_config.input_quantization_config[0].observer_algorithm = 'Minmax'
 
-            # if operation has bias
-            if operation.num_of_input > 2:
-                bias_config = base_quant_config.input_quantization_config[-1]
-                bias_config.state = QuantizationStates.FP32
+                base_quant_config.input_quantization_config[1].policy = QuantizationPolicy(
+                    QuantizationProperty.SYMMETRICAL +
+                    QuantizationProperty.LINEAR +
+                    QuantizationProperty.PER_TENSOR
+                )
+                base_quant_config.input_quantization_config[1].observer_algorithm = 'Minmax'
+            
+            elif operation.type == 'Add':
+                # Add 量化输入
+                base_quant_config.input_quantization_config[0].policy = QuantizationPolicy(
+                    QuantizationProperty.SYMMETRICAL +
+                    QuantizationProperty.LINEAR +
+                    QuantizationProperty.PER_TENSOR
+                )
+                base_quant_config.input_quantization_config[0].observer_algorithm = 'Minmax'
 
+                base_quant_config.input_quantization_config[1].policy = QuantizationPolicy(
+                    QuantizationProperty.SYMMETRICAL +
+                    QuantizationProperty.LINEAR +
+                    QuantizationProperty.PER_TENSOR
+                )
+                base_quant_config.input_quantization_config[1].observer_algorithm = 'Minmax'
+
+            elif operation.type == 'LayerNorm':
+                # LayerNorm 输入按 power of 2 量化
+                inp_config = base_quant_config.input_quantization_config[0]
+                inp_config.policy = QuantizationPolicy(
+                    QuantizationProperty.SYMMETRICAL +
+                    QuantizationProperty.LINEAR +
+                    QuantizationProperty.PER_CHANNEL 
+                    # +
+                    # QuantizationProperty.POWER_OF_2
+                )
+                base_quant_config.input_quantization_config[0] = \
+                    ChannelwiseTensorQuantizationConfig.convert_from_tensor_config(
+                        convert_from = inp_config,
+                        offsets = None, scales  = None, channel_axis = 0
+                    )
+                base_quant_config.input_quantization_config[0].observer_algorithm = 'Minmax'
+                
+                # layerNorm weight 和 bias 都不量化
+                wconfig = base_quant_config.input_quantization_config[1]
+                bconfig = base_quant_config.input_quantization_config[2]
+                wconfig.state = QuantizationStates.FP32
+                bconfig.state = QuantizationStates.FP32
+
+            # elif operation.type == 'MultiHeadAttention':
+            # TODO 接管 mha 过程
             base_quant_config.output_quantization_config[0].state = QuantizationStates.FP32
         return base_quant_config
 
@@ -106,7 +159,8 @@ class NCNNQuantizer(BaseQuantizer):
     @ property
     def quant_operation_types(self) -> set:
         return {
-            'Conv', 'Gemm'
+            # 'Conv', 'Gemm', 'Concat', 'Add', 'LayerNorm', 'MultiHeadAttention', 'Gelu'
+            'Conv', 'Gemm', 'Concat', 'Add', 'LayerNorm', 'Gelu'
         }
 
     @ property
